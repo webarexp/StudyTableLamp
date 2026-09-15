@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>WebAR Experience</title>
+
+  <script>
+    // pick the theme as early as possible so the page doesn't flash blue first.
+    // uses a shuffled "bag" so every theme is guaranteed to show once per 4 reloads,
+    // instead of plain chance possibly skipping one for a long stretch.
+    (function () {
+      'use strict';
+      var THEMES = ['blue', 'white', 'black', 'brown'];
+      var pick;
+      try {
+        var raw = sessionStorage.getItem('arThemeBag');
+        var bag = raw ? JSON.parse(raw) : [];
+        if (!bag.length) {
+          bag = THEMES.slice();
+          for (var i = bag.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1));
+            var tmp = bag[i]; bag[i] = bag[j]; bag[j] = tmp;
+          }
+        }
+        pick = bag.pop();
+        sessionStorage.setItem('arThemeBag', JSON.stringify(bag));
+      } catch (e) {
+        pick = THEMES[Math.floor(Math.random() * THEMES.length)];
+      }
+      document.documentElement.setAttribute('data-theme', pick);
+    })();
+  </script>
+
+  <script>
+    (function () {
+      'use strict';
+
+      function isMobileDevice() {
+        var ua = navigator.userAgent || navigator.vendor || '';
+        var mobileUAPattern = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile|webOS|BlackBerry/i;
+        var isIPadOS13Plus = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+        var uaSaysMobile = mobileUAPattern.test(ua) || isIPadOS13Plus;
+
+        var hasTouch =
+          ('ontouchstart' in window) ||
+          (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+
+        var hasCoarsePointer =
+          window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+
+        return uaSaysMobile && (hasTouch || hasCoarsePointer);
+      }
+
+      window.__isMobileDevice = isMobileDevice();
+    })();
+  </script>
+
+  <script>
+    if (window.__isMobileDevice) {
+      var mvModule = document.createElement('script');
+      mvModule.type = 'module';
+      mvModule.src = 'https://unpkg.com/@google/model-viewer@4.3.1/dist/model-viewer.min.js';
+      document.head.appendChild(mvModule);
+
+      var mvLegacy = document.createElement('script');
+      mvLegacy.setAttribute('nomodule', '');
+      mvLegacy.src = 'https://unpkg.com/@google/model-viewer@4.3.1/dist/model-viewer-legacy.js';
+      document.head.appendChild(mvLegacy);
+    }
+  </script>
+
+  <style>
+    /* reset */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* theme palettes: blue is the default, rest override on html[data-theme] */
+    :root {
+      --theme-bg: #C0D5F0;
+      --theme-accent: #1A365D;
+      --theme-accent-rgb: 26, 54, 93;
+      --theme-secondary: #2B4C7E;
+    }
+
+    html[data-theme="white"] {
+      --theme-bg: #F4F5F7;
+      --theme-accent: #2B2D33;
+      --theme-accent-rgb: 43, 45, 51;
+      --theme-secondary: #6B7280;
+    }
+
+    /* black theme: an actual dark background, not just a dark accent */
+    html[data-theme="black"] {
+      --theme-bg: #0A0A0A;
+      --theme-accent: #F5F5F5;
+      --theme-accent-rgb: 245, 245, 245;
+      --theme-secondary: #A0A0A0;
+    }
+
+    html[data-theme="brown"] {
+      --theme-bg: #F2E9DC;
+      --theme-accent: #6B4423;
+      --theme-accent-rgb: 107, 68, 35;
+      --theme-secondary: #8B6F47;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--theme-bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      transition: background 0.3s ease;
+    }
+
+    /* dvh fallback for mobile chrome resize */
+    model-viewer {
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      display: block;
+      background-color: var(--theme-bg);
+      transition: background-color 0.3s ease;
+      --poster-color: transparent;
+      --progress-bar-color: transparent; /* custom loader used instead */
+    }
+
+    /* loading overlay; hidden by JS after load */
+    #status-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      background: var(--theme-bg);
+      color: var(--theme-accent);
+      text-align: center;
+      padding: 32px;
+      transition: opacity 0.35s ease, background 0.3s ease;
+    }
+
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 3px solid rgba(var(--theme-accent-rgb), 0.2);
+      border-top-color: var(--theme-accent);
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* real loading progress bar, phase 2 */
+    #progress-track {
+      display: none;
+      width: 220px;
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(var(--theme-accent-rgb), 0.15);
+      overflow: hidden;
+    }
+
+    #progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--theme-accent);
+      border-radius: 999px;
+      transition: width 0.15s ease-out;
+    }
+
+    #progress-percent {
+      display: none;
+      font-size: 12.5px;
+      color: var(--theme-secondary);
+    }
+
+    #status-overlay.is-progress .spinner { display: none; }
+    #status-overlay.is-progress #progress-track { display: block; }
+    #status-overlay.is-progress #progress-percent { display: block; }
+
+    #status-text {
+      font-size: 15px;
+      line-height: 1.5;
+      letter-spacing: 0.01em;
+      color: var(--theme-accent);
+      max-width: 320px;
+    }
+
+    #status-subtext {
+      font-size: 12.5px;
+      color: var(--theme-secondary);
+      max-width: 280px;
+      line-height: 1.5;
+    }
+
+    /* error state stays red regardless of theme, for clarity */
+    #status-overlay.is-error #status-text {
+      color: #C53030;
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    #status-overlay.is-error .spinner,
+    #status-overlay.is-error #progress-track,
+    #status-overlay.is-error #progress-percent {
+      display: none;
+    }
+
+    #status-overlay.is-error #status-icon {
+      display: flex;
+    }
+
+    #status-icon {
+      display: none;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 2px solid #C53030;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 700;
+      color: #C53030;
+    }
+
+    /* hidden after load; display:none is enough, rest is backup */
+    #status-overlay.is-hidden {
+      display: none;
+      pointer-events: none;
+      opacity: 0;
+    }
+
+    /* AR launch button, always dead center */
+    #ar-button {
+      position: absolute;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 13px 22px;
+      color: var(--theme-accent);
+      background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.45) 0%,
+        rgba(255, 255, 255, 0.15) 100%
+      );
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      box-shadow:
+        0 8px 32px 0 rgba(0, 0, 0, 0.2),
+        inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+      cursor: pointer;
+      transition: transform 0.15s ease, color 0.3s ease;
+    }
+
+    #ar-button:active {
+      transform: translateX(-50%) scale(0.97);
+    }
+
+    /* only fires if ar attr is removed; JS handles real support check */
+    model-viewer:not([ar]) ~ #ar-button {
+      display: none;
+    }
+
+    /* refresh button, left of the AR button — same size as the theme buttons */
+    #refresh-button {
+      position: fixed;
+      bottom: 28px;
+      left: 20px;
+      z-index: 15;
+      width: 44px;
+      height: 44px;
+      aspect-ratio: 1 / 1;
+      flex-shrink: 0;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.15) 100%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+      transition: transform 0.2s ease;
+    }
+
+    #refresh-button:active {
+      transform: scale(0.94);
+    }
+
+    #refresh-button svg {
+      width: 26px;
+      height: 26px;
+      stroke-width: 2.5;
+      stroke: var(--theme-accent);
+      transition: stroke 0.3s ease;
+    }
+
+    /* color theme switcher: compact (default) mode is a vertical open/close, right of the AR button */
+    #theme-switcher {
+      position: fixed;
+      bottom: 28px;
+      right: 20px;
+      z-index: 150;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #theme-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 999px;
+      margin-bottom: 10px;
+      opacity: 0;
+      transform: scale(0.85);
+      transform-origin: bottom center;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    #theme-switcher.is-open #theme-panel {
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.15) 100%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+    }
+
+    #theme-trigger {
+      width: 44px;
+      height: 44px;
+      aspect-ratio: 1 / 1;
+      flex-shrink: 0;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.15) 100%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+      transition: transform 0.2s ease;
+    }
+
+    #theme-trigger:active {
+      transform: scale(0.94);
+    }
+
+    /* glossy swatch bead, color set per-theme below. fixed aspect-ratio keeps it
+       a true circle even if flexbox would otherwise squeeze it. */
+    .theme-swatch {
+      width: 34px;
+      height: 34px;
+      aspect-ratio: 1 / 1;
+      flex-shrink: 0;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.8);
+      padding: 0;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .theme-swatch:active {
+      transform: scale(0.9);
+    }
+
+    .theme-swatch.is-selected {
+      border-color: #ffffff;
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 2px 8px rgba(0, 0, 0, 0.25);
+    }
+
+    /* each swatch's own colors, independent of the currently active theme */
+    .theme-swatch[data-theme="blue"]  { background: linear-gradient(135deg, #C0D5F0 50%, #1A365D 50%); }
+    .theme-swatch[data-theme="white"] { background: linear-gradient(135deg, #FFFFFF 50%, #D8DADE 50%); }
+    .theme-swatch[data-theme="black"] { background: linear-gradient(135deg, #FFFFFF 50%, #000000 50%); }
+    .theme-swatch[data-theme="brown"] { background: linear-gradient(135deg, #E8D5B7 50%, #6B4423 50%); }
+
+    /* wide mode: used on the loading screen and on desktop — horizontal, always open, no trigger */
+    #theme-switcher.is-wide {
+      left: 50%;
+      right: auto;
+      transform: translateX(-50%);
+    }
+
+    #theme-switcher.is-wide #theme-trigger {
+      display: none;
+    }
+
+    #theme-switcher.is-wide #theme-panel {
+      flex-direction: row;
+      margin-bottom: 0;
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.15) 100%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+    }
+
+    #theme-switcher.is-wide .theme-swatch {
+      width: 44px;
+      height: 44px;
+    }
+
+    @media (max-width: 380px) {
+      #status-text { font-size: 14px; }
+      #ar-button { padding: 12px 18px; font-size: 13px; }
+      #progress-track { width: 180px; }
+      #refresh-button { width: 38px; height: 38px; }
+      #refresh-button svg { width: 22px; height: 22px; }
+      #theme-trigger { width: 38px; height: 38px; }
+      .theme-swatch { width: 28px; height: 28px; }
+      #theme-switcher.is-wide .theme-swatch { width: 38px; height: 38px; }
+      #theme-panel { gap: 8px; padding: 8px; }
+    }
+
+    /* brand watermark: glass pill, text comes from CSS so it isn't a plain editable node */
+    #brand-watermark {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9999;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--theme-accent);
+      letter-spacing: 0.05em;
+      pointer-events: none;
+      padding: 8px 18px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.15) 100%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+      transition: color 0.3s ease;
+    }
+
+    #brand-watermark::before {
+      content: attr(data-brand);
+    }
+
+    /* desktop screen: shown instead of the AR experience */
+    #desktop-block {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      background: var(--theme-bg);
+      overflow: hidden;
+      transition: background 0.3s ease;
+    }
+
+    #desktop-block.is-visible {
+      display: flex;
+    }
+
+    /* soft decorative glow, purely visual */
+    #desktop-block::before,
+    #desktop-block::after {
+      content: '';
+      position: absolute;
+      width: 320px;
+      height: 320px;
+      border-radius: 50%;
+      background: var(--theme-accent);
+      opacity: 0.18;
+      filter: blur(70px);
+      pointer-events: none;
+    }
+
+    #desktop-block::before { top: -100px; left: -100px; }
+    #desktop-block::after { bottom: -100px; right: -100px; }
+
+    #desktop-block-card {
+      position: relative;
+      max-width: 440px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      padding: 44px 40px;
+      border-radius: 28px;
+      text-align: center;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.18) 100%);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      backdrop-filter: blur(24px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.15), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+    }
+
+    #desktop-block-icon {
+      width: 76px;
+      height: 76px;
+      border-radius: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.2) 100%);
+      -webkit-backdrop-filter: blur(16px) saturate(180%);
+      backdrop-filter: blur(16px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), inset 0 1px 1px 0 rgba(255, 255, 255, 0.6);
+    }
+
+    #desktop-block-icon svg {
+      width: 36px;
+      height: 36px;
+      stroke: var(--theme-accent);
+      color: var(--theme-accent);
+    }
+
+    #desktop-block-eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--theme-secondary);
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(var(--theme-accent-rgb), 0.08);
+    }
+
+    #desktop-block-title {
+      color: var(--theme-accent);
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      line-height: 1.4;
+    }
+
+    #desktop-block-sub {
+      font-size: 13.5px;
+      color: var(--theme-secondary);
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="brand-watermark" data-brand="@webaragency"></div>
+
+  <div id="desktop-block" role="alert">
+    <div id="desktop-block-card">
+      <div id="desktop-block-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.2"></rect>
+          <rect x="6" y="6" width="1.5" height="1.5" fill="currentColor" stroke="none"></rect>
+          <rect x="14" y="3" width="7" height="7" rx="1.2"></rect>
+          <rect x="17" y="6" width="1.5" height="1.5" fill="currentColor" stroke="none"></rect>
+          <rect x="3" y="14" width="7" height="7" rx="1.2"></rect>
+          <rect x="6" y="17" width="1.5" height="1.5" fill="currentColor" stroke="none"></rect>
+          <rect x="14.5" y="14.5" width="2" height="2" fill="currentColor" stroke="none"></rect>
+          <rect x="18.5" y="14.5" width="2" height="2" fill="currentColor" stroke="none"></rect>
+          <rect x="14.5" y="18.5" width="2" height="2" fill="currentColor" stroke="none"></rect>
+          <rect x="18.5" y="18.5" width="2" height="2" fill="currentColor" stroke="none"></rect>
+          <rect x="16.5" y="16.5" width="2" height="2" fill="currentColor" stroke="none"></rect>
+        </svg>
+      </div>
+      <div id="desktop-block-eyebrow">Mobile experience</div>
+      <div id="desktop-block-title">
+        This experience only works on mobile. Open it on your phone or tablet to view the model in AR.
+      </div>
+      <div id="desktop-block-sub">
+        Scan the QR code, or open this link on your phone, to view it in AR.
+      </div>
+    </div>
+  </div>
+
+  <!-- lives outside #ar-experience so it also shows on desktop -->
+  <div id="theme-switcher" class="is-wide">
+    <div id="theme-panel" aria-label="Color themes">
+      <button class="theme-swatch" data-theme="blue" aria-label="Blue theme" aria-pressed="false"></button>
+      <button class="theme-swatch" data-theme="white" aria-label="White theme" aria-pressed="false"></button>
+      <button class="theme-swatch" data-theme="black" aria-label="Black theme" aria-pressed="false"></button>
+      <button class="theme-swatch" data-theme="brown" aria-label="Brown theme" aria-pressed="false"></button>
+    </div>
+    <button id="theme-trigger" aria-label="Change color theme" aria-haspopup="true" aria-expanded="false">
+      <span id="trigger-swatch" class="theme-swatch" data-theme="blue" aria-hidden="true"></span>
+    </button>
+  </div>
+
+  <div id="ar-experience">
+
+  <!-- scale: bump all three numbers together to resize the model, e.g. "1.5 1.5 1.5" -->
+  <model-viewer
+    id="ar-model"
+    src="model.glb"
+    ios-src="model.usdz"
+    poster="poster.png"
+    alt="3D model AR preview"
+
+    ar
+    ar-modes="scene-viewer webxr quick-look"
+    ar-scale="auto"
+    ar-placement="floor"
+    scale="1 1 1"
+
+    camera-controls
+    touch-action="pan-y"
+    interaction-prompt="auto"
+    shadow-intensity="1"
+    exposure="1"
+    auto-rotate
+  >
+    <button slot="ar-button" id="ar-button">
+      View in your space
+    </button>
+  </model-viewer>
+
+  <button id="refresh-button" aria-label="Reload page">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"></path>
+      <polyline points="21 3 21 8 16 8"></polyline>
+    </svg>
+  </button>
+
+  <div id="status-overlay" role="status" aria-live="polite">
+    <div class="spinner" id="status-spinner" aria-hidden="true"></div>
+    <div id="progress-track" aria-hidden="true">
+      <div id="progress-fill"></div>
+    </div>
+    <div id="progress-percent" aria-hidden="true"></div>
+    <div id="status-icon" aria-hidden="true">!</div>
+    <div>
+      <div id="status-text">Loading AR Experience...</div>
+      <div id="status-subtext" style="margin-top:10px;">Keep this tab open — larger files may take a few seconds longer.</div>
+    </div>
+  </div>
+
+  </div><script>
+    (function () {
+      'use strict';
+
+      // restore the watermark if its text/element is edited or removed via devtools
+      var WATERMARK_TEXT = '@webaragency';
+      function ensureWatermark() {
+        var el = document.getElementById('brand-watermark');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'brand-watermark';
+          document.body.appendChild(el);
+        }
+        if (el.getAttribute('data-brand') !== WATERMARK_TEXT) {
+          el.setAttribute('data-brand', WATERMARK_TEXT);
+        }
+      }
+      ensureWatermark();
+      setInterval(ensureWatermark, 1500);
+
+      // theme switcher: present on both mobile and desktop
+      var themeSwitcher = document.getElementById('theme-switcher');
+      var themeTrigger  = document.getElementById('theme-trigger');
+      var themePanel    = document.getElementById('theme-panel');
+      var themeSwatches = themePanel.querySelectorAll('.theme-swatch');
+      var triggerSwatch = document.getElementById('trigger-swatch');
+
+      function setPanelOpen(isOpen) {
+        themeSwitcher.classList.toggle('is-open', isOpen);
+        themeTrigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        themeSwatches.forEach(function (sw) { sw.tabIndex = isOpen ? 0 : -1; });
+      }
+
+      function setTheme(name) {
+        document.documentElement.setAttribute('data-theme', name);
+        triggerSwatch.setAttribute('data-theme', name);
+        themeSwatches.forEach(function (sw) {
+          var selected = sw.getAttribute('data-theme') === name;
+          sw.classList.toggle('is-selected', selected);
+          sw.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        });
+      }
+
+      themeTrigger.addEventListener('click', function () {
+        setPanelOpen(!themeSwitcher.classList.contains('is-open'));
+      });
+
+      themeSwatches.forEach(function (sw) {
+        sw.addEventListener('click', function () {
+          setTheme(sw.getAttribute('data-theme'));
+          // only relevant in compact mode; wide mode has no open/close state
+          if (!themeSwitcher.classList.contains('is-wide')) {
+            setPanelOpen(false);
+          }
+        });
+      });
+
+      document.addEventListener('click', function (event) {
+        if (themeSwitcher.classList.contains('is-open') && !themeSwitcher.contains(event.target)) {
+          setPanelOpen(false);
+        }
+      });
+
+      // sync the swatch/trigger UI to whichever theme the head script already applied
+      setTheme(document.documentElement.getAttribute('data-theme') || 'blue');
+
+      var arExperience = document.getElementById('ar-experience');
+      var desktopBlock = document.getElementById('desktop-block');
+
+      if (!window.__isMobileDevice) {
+        // desktop: show block instead of the AR experience; theme switcher stays in wide mode
+        if (arExperience && arExperience.parentNode) {
+          arExperience.parentNode.removeChild(arExperience);
+        }
+        desktopBlock.classList.add('is-visible');
+        return;
+      }
+
+      var refreshButton = document.getElementById('refresh-button');
+      refreshButton.addEventListener('click', function () {
+        window.location.reload();
+      });
+
+      var modelViewer     = document.getElementById('ar-model');
+      var overlay         = document.getElementById('status-overlay');
+      var statusText      = document.getElementById('status-text');
+      var statusSub       = document.getElementById('status-subtext');
+      var arButton        = document.getElementById('ar-button');
+      var progressFill    = document.getElementById('progress-fill');
+      var progressPercent = document.getElementById('progress-percent');
+
+      var hasResolved  = false; // avoid double-firing
+      var minDelayDone = false; // 2s minimum spinner time is up
+      var modelReady   = false; // 'load' has fired
+
+      function hideOverlay() {
+        if (hasResolved) return;
+        hasResolved = true;
+
+        overlay.style.pointerEvents = 'none';
+        overlay.classList.add('is-hidden');
+
+        // model's ready: drop the loading-screen wide theme switcher for the compact one
+        themeSwitcher.classList.remove('is-wide');
+        setPanelOpen(false);
+
+        // hide AR button if device can't do AR
+        if (!modelViewer.canActivateAR) {
+          arButton.style.display = 'none';
+        }
+      }
+
+      function showError() {
+        if (hasResolved) return;
+        hasResolved = true;
+
+        overlay.classList.add('is-error');
+        overlay.classList.remove('is-hidden');
+        overlay.style.pointerEvents = 'auto';
+
+        statusText.textContent = 'Error: Could not load 3D model.';
+        statusSub.textContent = '';
+      }
+
+      // spinner shows at least 2s, then switches to the real progress bar if still loading
+      window.setTimeout(function () {
+        minDelayDone = true;
+        if (modelReady) {
+          hideOverlay();
+        } else {
+          overlay.classList.add('is-progress');
+        }
+      }, 2000);
+
+      modelViewer.addEventListener('progress', function (event) {
+        var pct = Math.round(event.detail.totalProgress * 100);
+        progressFill.style.width = pct + '%';
+        progressPercent.textContent = pct + '%';
+      });
+
+      modelViewer.addEventListener('load', function () {
+        modelReady = true;
+        if (minDelayDone) hideOverlay();
+      });
+
+      modelViewer.addEventListener('error', function (event) {
+        console.error('model-viewer load error:', event && event.detail);
+        showError();
+      });
+
+      // fallback if load/error never fires
+      window.setTimeout(function () {
+        if (!hasResolved) showError();
+      }, 45000);
+
+      // defensive: slot="ar-button" already triggers this
+      arButton.addEventListener('click', function () {
+        if (modelViewer.canActivateAR) {
+          modelViewer.activateAR();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
